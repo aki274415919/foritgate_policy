@@ -1,6 +1,9 @@
 import re
 import tkinter as tk
 from tkinter import filedialog
+from collections import defaultdict
+
+
 
 def choose_conf_file():
     root = tk.Tk()
@@ -13,6 +16,161 @@ def choose_conf_file():
         print("ファイルが選択されませんでした。終了します。")
         exit()
     return conf_path
+
+import re
+from collections import defaultdict
+
+def extract_vdom_blocks(conf_text):
+    """提取每个vdom的独立配置块"""
+    vdom_blocks = defaultdict(str)
+    current_vdom = None
+    vdom_re = re.compile(r'^edit\s+("?)(\S+)\1$')
+    in_vdom = False
+    vdom_name = ""
+    for line in conf_text.splitlines():
+        if line.strip() == 'config vdom':
+            in_vdom = True
+            continue
+        if in_vdom:
+            m = vdom_re.match(line.strip())
+            if m:
+                vdom_name = m.group(2)
+                current_vdom = vdom_name
+                vdom_blocks[vdom_name] = ""
+                continue
+            if line.strip() == "next":
+                current_vdom = None
+                continue
+            if current_vdom:
+                vdom_blocks[current_vdom] += line + '\n'
+    return vdom_blocks
+
+def parse_objects_from_block(conf_block):
+    """解析单个vdom或global中的对象"""
+    addrs, addrgrps, srvs, srvgrps = {}, {}, {}, {}
+
+    # 地址对象
+    for m in re.finditer(r'config firewall address(.*?)end', conf_block, re.DOTALL):
+        for m2 in re.finditer(r'edit "([^"]+)"', m.group(1)):
+            addrs[m2.group(1)] = True
+
+    # 地址组对象
+    for m in re.finditer(r'config firewall addrgrp(.*?)end', conf_block, re.DOTALL):
+        for g in re.finditer(r'edit "([^"]+)"(.*?)next', m.group(1), re.DOTALL):
+            group_name = g.group(1)
+            member_match = re.search(r'set member (.+)', g.group(2))
+            if member_match:
+                members = [x.strip('\"') for x in member_match.group(1).split()]
+                addrgrps[group_name] = members
+
+    # 服务对象
+    for m in re.finditer(r'config firewall service custom(.*?)end', conf_block, re.DOTALL):
+        for m2 in re.finditer(r'edit "([^"]+)"', m.group(1)):
+            srvs[m2.group(1)] = True
+
+    # 服务组对象
+    for m in re.finditer(r'config firewall service group(.*?)end', conf_block, re.DOTALL):
+        for g in re.finditer(r'edit "([^"]+)"(.*?)next', m.group(1), re.DOTALL):
+            group_name = g.group(1)
+            member_match = re.search(r'set member (.+)', g.group(2))
+            if member_match:
+                members = [x.strip('\"') for x in member_match.group(1).split()]
+                srvgrps[group_name] = members
+
+    return addrs, addrgrps, srvs, srvgrps
+
+def collect_all_objects(conf_text):
+    """全局和各VDOM的所有对象都采集一遍，返回大字典"""
+    all_objs = {}
+    # 1. 先处理global段（如果有）
+    global_addrs, global_addrgrps, global_srvs, global_srvgrps = parse_objects_from_block(conf_text)
+    all_objs['global'] = {
+        "address": global_addrs,
+        "addrgrp": global_addrgrps,
+        "service": global_srvs,
+        "servicegrp": global_srvgrps
+    }
+    # 2. 各vdom
+    vdom_blocks = extract_vdom_blocks(conf_text)
+    for vdom, vblock in vdom_blocks.items():
+        addrs, addrgrps, srvs, srvgrps = parse_objects_from_block(vblock)
+        all_objs[vdom] = {
+            "address": addrs,
+            "addrgrp": addrgrps,
+            "service": srvs,
+            "servicegrp": srvgrps
+        }
+    return all_objs
+
+def resolve_addr(addr_name, all_objs, vdom='global', resolved=None):
+    """递归查找地址组成员，返回所有底层地址对象"""
+    if resolved is None:
+        resolved = set()
+    if addr_name in resolved:
+        return set()  # 避免循环嵌套
+    resolved.add(addr_name)
+    addrgrp = all_objs[vdom].get('addrgrp', {})
+    address = all_objs[vdom].get('address', {})
+    # 递归：组
+    if addr_name in addrgrp:
+        all_members = set()
+        for m in addrgrp[addr_name]:
+            all_members |= resolve_addr(m, all_objs, vdom, resolved)
+        return all_members
+    # 原子对象
+    elif addr_name in address:
+        return {addr_name}
+    else:
+        return set()  # 未定义，或在别的vdom
+
+def resolve_service(svc_name, all_objs, vdom='global', resolved=None):
+    if resolved is None:
+        resolved = set()
+    if svc_name in resolved:
+        return set()
+    resolved.add(svc_name)
+    grp = all_objs[vdom].get('servicegrp', {})
+    single = all_objs[vdom].get('service', {})
+    if svc_name in grp:
+        all_members = set()
+        for m in grp[svc_name]:
+            all_members |= resolve_service(m, all_objs, vdom, resolved)
+        return all_members
+    elif svc_name in single:
+        return {svc_name}
+    else:
+        return set()
+
+def find_policy_reference_issues(policy_list, all_objs, vdom):
+    issues = []
+    known_addr = set(all_objs[vdom].get("address", {})) | set(all_objs[vdom].get("addrgrp", {}))
+    known_svc = set(all_objs[vdom].get("service", {})) | set(all_objs[vdom].get("servicegrp", {}))
+    # 支持全局对象引用
+    global_addr = set(all_objs['global'].get("address", {})) | set(all_objs['global'].get("addrgrp", {}))
+    global_svc = set(all_objs['global'].get("service", {})) | set(all_objs['global'].get("servicegrp", {}))
+
+    for pol in policy_list:
+        pid = pol.get('policyid') or pol.get('id') or pol.get('name', '[noid]')
+        vdom_of_pol = pol.get('vdom', vdom)
+        for k in ('srcaddr', 'dstaddr'):
+            for addr in pol.get(k, '').split():
+                if addr in {"all", "ALL"}:
+                    continue
+                if addr not in known_addr:
+                    # 跨vdom定义
+                    if addr in global_addr:
+                        issues.append(f"ポリシーID {pid}: アドレス「{addr}」は global 定義")
+                    else:
+                        issues.append(f"ポリシーID {pid}: アドレス「{addr}」が {vdom} または global に未定義")
+        for svc in pol.get('service', '').split():
+            if svc in {"ALL", "all"}:
+                continue
+            if svc not in known_svc:
+                if svc in global_svc:
+                    issues.append(f"ポリシーID {pid}: サービス「{svc}」は global 定義")
+                else:
+                    issues.append(f"ポリシーID {pid}: サービス「{svc}」が {vdom} または global に未定義")
+    return issues
 
 def parse_firewall_address(conf_text):
     results, lookup = {}, {}
