@@ -650,26 +650,27 @@ def main():
     conf_path = choose_conf_file()
     with open(conf_path, "r", encoding="utf-8") as f:
         conf_text = f.read()
-    addresses, address_lookup = parse_firewall_address(conf_text)
-    address_groups, addrgrp_lookup = parse_firewall_addrgrp(conf_text)
-    services, service_lookup = parse_firewall_service_custom(conf_text)
-    service_groups, svcgrp_lookup = parse_firewall_service_group(conf_text)
-    policies = parse_firewall_policy(conf_text)
-    # 递归检测未定义对象
-    undefined_addr, undefined_svc = collect_undefined_objs(
-        policies, addresses, address_lookup,
-        address_groups, addrgrp_lookup,
-        services, service_lookup,
-        service_groups, svcgrp_lookup
-    )
-    generate_policy_table(
-        policies, addresses, address_lookup,
-        address_groups, addrgrp_lookup,
-        services, service_lookup,
-        service_groups, svcgrp_lookup,
-        undefined_addr, undefined_svc,
-        out_file="policy_object_table.html"
-    )
+
+    # 1. 采集所有 VDOM（含 global）的对象/组/服务
+    all_objs = collect_all_objects(conf_text)  # 你的新模块
+
+    # 2. 解析所有 policy，带 vdom 信息
+    policies = parse_all_policies(conf_text)   # 你需确保返回 [{'id':1,'vdom':'vdom1','srcaddr':...}, ...]
+    
+    # 3. 分 vdom 检查所有策略引用问题
+    all_issues = []
+    for vdom in all_objs:
+        vdom_policies = [p for p in policies if p.get("vdom", "global") == vdom]
+        issues = find_policy_reference_issues(vdom_policies, all_objs, vdom)
+        all_issues.extend(issues)
+
+    # 4. 输出结果
+    if all_issues:
+        print("==== 未定義・跨VDOM・引用錯誤 ====")
+        for line in all_issues:
+            print(line)
+    else:
+        print("すべてのポリシーの参照オブジェクトは正常に定義されています。")
 
 if __name__ == "__main__":
     main()
