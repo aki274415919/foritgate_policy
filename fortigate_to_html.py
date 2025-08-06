@@ -72,38 +72,106 @@ def extract_vdom_blocks(conf_text):
 
 
 def parse_objects_from_block(conf_block):
-    """解析单个vdom或global中的对象"""
-    addrs, addrgrps, srvs, srvgrps = {}, {}, {}, {}
+    """
+    全面采集各类对象，包括IPv4、IPv6、VIP、VIP组、服务、服务组、调度、调度组、IP池。
+    """
+    objs = {
+        "address": {}, "addrgrp": {},
+        "address6": {}, "addrgrp6": {},
+        "vip": {}, "vipgrp": {},
+        "service": {}, "servicegrp": {},
+        "schedule": {}, "schedulegroup": {},
+        "ippool": {}
+    }
 
-    # 地址对象
-    for m in re.finditer(r'config firewall address(.*?)end', conf_block, re.DOTALL):
+    # IPv4 地址对象
+    for m in re.finditer(r'config firewall address(.*?)(?:^end$)', conf_block, re.DOTALL | re.MULTILINE):
         for m2 in re.finditer(r'edit "([^"]+)"', m.group(1)):
-            addrs[m2.group(1)] = True
+            objs['address'][m2.group(1)] = True
 
-    # 地址组对象
-    for m in re.finditer(r'config firewall addrgrp(.*?)end', conf_block, re.DOTALL):
+    # IPv4 地址组
+    for m in re.finditer(r'config firewall addrgrp(.*?)(?:^end$)', conf_block, re.DOTALL | re.MULTILINE):
         for g in re.finditer(r'edit "([^"]+)"(.*?)next', m.group(1), re.DOTALL):
             group_name = g.group(1)
             member_match = re.search(r'set member (.+)', g.group(2))
-            if member_match:
-                members = [x.strip('\"') for x in member_match.group(1).split()]
-                addrgrps[group_name] = members
+            members = [x.strip('\"') for x in member_match.group(1).split()] if member_match else []
+            objs['addrgrp'][group_name] = members
+
+    # IPv6 地址对象
+    for m in re.finditer(r'config firewall address6(.*?)(?:^end$)', conf_block, re.DOTALL | re.MULTILINE):
+        for m2 in re.finditer(r'edit "([^"]+)"', m.group(1)):
+            objs['address6'][m2.group(1)] = True
+
+    # IPv6 地址组
+    for m in re.finditer(r'config firewall addrgrp6(.*?)(?:^end$)', conf_block, re.DOTALL | re.MULTILINE):
+        for g in re.finditer(r'edit "([^"]+)"(.*?)next', m.group(1), re.DOTALL):
+            group_name = g.group(1)
+            member_match = re.search(r'set member (.+)', g.group(2))
+            members = [x.strip('\"') for x in member_match.group(1).split()] if member_match else []
+            objs['addrgrp6'][group_name] = members
+
+    # VIP
+    for m in re.finditer(r'config firewall vip(.*?)(?:^end$)', conf_block, re.DOTALL | re.MULTILINE):
+        for m2 in re.finditer(r'edit "([^"]+)"', m.group(1)):
+            objs['vip'][m2.group(1)] = True
+
+    # VIP组
+    for m in re.finditer(r'config firewall vipgrp(.*?)(?:^end$)', conf_block, re.DOTALL | re.MULTILINE):
+        for g in re.finditer(r'edit "([^"]+)"(.*?)next', m.group(1), re.DOTALL):
+            group_name = g.group(1)
+            member_match = re.search(r'set member (.+)', g.group(2))
+            members = [x.strip('\"') for x in member_match.group(1).split()] if member_match else []
+            objs['vipgrp'][group_name] = members
 
     # 服务对象
-    for m in re.finditer(r'config firewall service custom(.*?)end', conf_block, re.DOTALL):
+    for m in re.finditer(r'config firewall service custom(.*?)(?:^end$)', conf_block, re.DOTALL | re.MULTILINE):
         for m2 in re.finditer(r'edit "([^"]+)"', m.group(1)):
-            srvs[m2.group(1)] = True
+            objs['service'][m2.group(1)] = True
 
-    # 服务组对象
-    for m in re.finditer(r'config firewall service group(.*?)end', conf_block, re.DOTALL):
+    # 服务组
+    for m in re.finditer(r'config firewall service group(.*?)(?:^end$)', conf_block, re.DOTALL | re.MULTILINE):
         for g in re.finditer(r'edit "([^"]+)"(.*?)next', m.group(1), re.DOTALL):
             group_name = g.group(1)
             member_match = re.search(r'set member (.+)', g.group(2))
-            if member_match:
-                members = [x.strip('\"') for x in member_match.group(1).split()]
-                srvgrps[group_name] = members
+            members = [x.strip('\"') for x in member_match.group(1).split()] if member_match else []
+            objs['servicegrp'][group_name] = members
 
-    return addrs, addrgrps, srvs, srvgrps
+    # 调度
+    for m in re.finditer(r'config firewall schedule(.*?)(?:^end$)', conf_block, re.DOTALL | re.MULTILINE):
+        for m2 in re.finditer(r'edit "([^"]+)"', m.group(1)):
+            objs['schedule'][m2.group(1)] = True
+
+    # 调度组
+    for m in re.finditer(r'config firewall schedule group(.*?)(?:^end$)', conf_block, re.DOTALL | re.MULTILINE):
+        for g in re.finditer(r'edit "([^"]+)"(.*?)next', m.group(1), re.DOTALL):
+            group_name = g.group(1)
+            member_match = re.search(r'set member (.+)', g.group(2))
+            members = [x.strip('\"') for x in member_match.group(1).split()] if member_match else []
+            objs['schedulegroup'][group_name] = members
+
+    # IP池
+    for m in re.finditer(r'config firewall ippool(.*?)(?:^end$)', conf_block, re.DOTALL | re.MULTILINE):
+        for m2 in re.finditer(r'edit "([^"]+)"', m.group(1)):
+            objs['ippool'][m2.group(1)] = True
+        # Zone
+    objs['zone'] = {}
+    for m in re.finditer(r'config system zone(.*?)(?:^end$)', conf_block, re.DOTALL | re.MULTILINE):
+        for g in re.finditer(r'edit "([^"]+)"(.*?)next', m.group(1), re.DOTALL):
+            zone_name = g.group(1)
+            iface_match = re.search(r'set interface (.+)', g.group(2))
+            interfaces = [x.strip('\"') for x in iface_match.group(1).split()] if iface_match else []
+            objs['zone'][zone_name] = interfaces
+
+    # 接口 interface
+    objs['interface'] = {}
+    for m in re.finditer(r'config system interface(.*?)(?:^end$)', conf_block, re.DOTALL | re.MULTILINE):
+        for g in re.finditer(r'edit "([^"]+)"', m.group(1)):
+            iface_name = g.group(1)
+            objs['interface'][iface_name] = True
+
+
+    return objs
+
 
 def collect_all_objects(conf_text):
     """全局和各VDOM的所有对象都采集一遍，返回大字典"""
@@ -389,6 +457,11 @@ def render_obj_branch(
     address_groups, addrgrp_lookup,
     services, service_lookup,
     service_groups, svcgrp_lookup,
+    addresses6=None, address6_lookup=None,
+    address_groups6=None, addrgrp6_lookup=None,
+    vips=None, vip_lookup=None,
+    vipgrps=None, vipgrp_lookup=None,
+    zones=None, interfaces=None,
     depth=0, seen=None
 ):
     if seen is None:
@@ -398,21 +471,13 @@ def render_obj_branch(
         return ""
     seen.add(key)
 
+    # === 处理 any/all ===
     if isinstance(obj_name, str) and obj_name.strip().lower() in {"any", "all"}:
         return f"<div class='object-level' style='color:green'><b>any</b></div>"
 
+    # --- IPv4 地址对象 ---
     obj = smart_obj_lookup(obj_name, addresses, address_lookup)
     if obj:
-        # ===== 新增 VIP 判断并高亮 =====
-        if obj.get('extip') and obj.get('mappedip'):   # 这两个字段VIP专有
-            info = (
-                f"{obj['name']} <span style='color:#06b;font-weight:bold'>[VIP]</span> "
-                f"外部:{obj['extip']} → 内部:{obj['mappedip']} "
-            )
-            if obj.get('comment'):
-                info += f"<span style='color:#aaa'>#{obj['comment']}</span>"
-            return f"<div class='object-level' style='color:#06b;background:#e7f3ff;'>{info}</div>"
-        # ===== 普通地址对象显示 =====
         info = f"{obj['name']} <span style='color:#999'>[{obj.get('type','')}]</span> "
         if obj.get('ip'): info += obj['ip'] + " "
         if obj.get('fqdn'): info += obj['fqdn'] + " "
@@ -420,7 +485,7 @@ def render_obj_branch(
         if obj.get('comment'): info += f"<span style='color:#aaa'>#{obj['comment']}</span>"
         return f"<div class='object-level'>{info}</div>"
 
-
+    # --- IPv4 地址组 ---
     grp = smart_obj_lookup(obj_name, address_groups, addrgrp_lookup)
     if grp:
         html = f"<div class='object-level cell-flex' style='font-weight:bold;color:#148;'>"
@@ -435,11 +500,88 @@ def render_obj_branch(
                 address_groups, addrgrp_lookup,
                 services, service_lookup,
                 service_groups, svcgrp_lookup,
+                addresses6, address6_lookup,
+                address_groups6, addrgrp6_lookup,
+                vips, vip_lookup,
+                vipgrps, vipgrp_lookup,
+                zones, interfaces,
                 depth+1, seen
             )
         html += "</div>"
         return html
 
+    # --- IPv6 地址对象 ---
+    if addresses6 and address6_lookup:
+        obj6 = smart_obj_lookup(obj_name, addresses6, address6_lookup)
+        if obj6:
+            info = f"{obj6['name']} <span style='color:#5a9'>[IPv6]</span> "
+            if obj6.get('ip'): info += obj6['ip'] + " "
+            if obj6.get('comment'): info += f"<span style='color:#aaa'>#{obj6['comment']}</span>"
+            return f"<div class='object-level'>{info}</div>"
+
+    # --- IPv6 地址组 ---
+    if address_groups6 and addrgrp6_lookup:
+        grp6 = smart_obj_lookup(obj_name, address_groups6, addrgrp6_lookup)
+        if grp6:
+            html = f"<div class='object-level cell-flex' style='font-weight:bold;color:#292;'>"
+            html += f"<span class='obj-name'>{grp6['name']} <span style='color:#888'>(IPv6グループ)</span></span>"
+            cell_id = f"obj-addrgrp6-{grp6['name']}"
+            html += f"<span class='toggle-btn' onclick=\"toggleBranch('{cell_id}')\">[+]</span></div>"
+            html += f"<div class='object-branch' id='{cell_id}'>"
+            for member in grp6['members']:
+                html += render_obj_branch(
+                    member,
+                    addresses, address_lookup,
+                    address_groups, addrgrp_lookup,
+                    services, service_lookup,
+                    service_groups, svcgrp_lookup,
+                    addresses6, address6_lookup,
+                    address_groups6, addrgrp6_lookup,
+                    vips, vip_lookup,
+                    vipgrps, vipgrp_lookup,
+                    zones, interfaces,
+                    depth+1, seen
+                )
+            html += "</div>"
+            return html
+
+    # --- VIP ---
+    if vips and vip_lookup:
+        vip = smart_obj_lookup(obj_name, vips, vip_lookup)
+        if vip:
+            info = f"{vip['name']} <span style='color:#06b;font-weight:bold'>[VIP]</span> "
+            if vip.get('extip') and vip.get('mappedip'):
+                info += f"外部:{vip['extip']} → 内部:{vip['mappedip']} "
+            if vip.get('comment'): info += f"<span style='color:#aaa'>#{vip['comment']}</span>"
+            return f"<div class='object-level' style='color:#06b;background:#e7f3ff;'>{info}</div>"
+
+    # --- VIP组 ---
+    if vipgrps and vipgrp_lookup:
+        vipgrp = smart_obj_lookup(obj_name, vipgrps, vipgrp_lookup)
+        if vipgrp:
+            html = f"<div class='object-level cell-flex' style='font-weight:bold;color:#258;'>"
+            html += f"<span class='obj-name'>{vipgrp['name']} <span style='color:#888'>(VIPグループ)</span></span>"
+            cell_id = f"obj-vipgrp-{vipgrp['name']}"
+            html += f"<span class='toggle-btn' onclick=\"toggleBranch('{cell_id}')\">[+]</span></div>"
+            html += f"<div class='object-branch' id='{cell_id}'>"
+            for member in vipgrp['members']:
+                html += render_obj_branch(
+                    member,
+                    addresses, address_lookup,
+                    address_groups, addrgrp_lookup,
+                    services, service_lookup,
+                    service_groups, svcgrp_lookup,
+                    addresses6, address6_lookup,
+                    address_groups6, addrgrp6_lookup,
+                    vips, vip_lookup,
+                    vipgrps, vipgrp_lookup,
+                    zones, interfaces,
+                    depth+1, seen
+                )
+            html += "</div>"
+            return html
+
+    # --- 服务对象 ---
     svc = smart_obj_lookup(obj_name, services, service_lookup)
     if svc:
         info = f"{svc['name']} <span style='color:#999'>[サービス]</span> "
@@ -449,6 +591,7 @@ def render_obj_branch(
         if svc.get('comment'): info += f"<span style='color:#aaa'>#{svc['comment']}</span>"
         return f"<div class='object-level'>{info}</div>"
 
+    # --- 服务组 ---
     svcgrp = smart_obj_lookup(obj_name, service_groups, svcgrp_lookup)
     if svcgrp:
         html = f"<div class='object-level cell-flex' style='font-weight:bold;color:#148;'>"
@@ -463,11 +606,47 @@ def render_obj_branch(
                 address_groups, addrgrp_lookup,
                 services, service_lookup,
                 service_groups, svcgrp_lookup,
+                addresses6, address6_lookup,
+                address_groups6, addrgrp6_lookup,
+                vips, vip_lookup,
+                vipgrps, vipgrp_lookup,
+                zones, interfaces,
                 depth+1, seen
             )
         html += "</div>"
         return html
 
+    # --- Zone（安全区域） ---
+    if zones and obj_name in zones:
+        html = f"<div class='object-level cell-flex' style='font-weight:bold;color:#173;'>"
+        html += f"<span class='obj-name'>{obj_name} <span style='color:#888'>(ゾーン)</span></span>"
+        cell_id = f"obj-zone-{obj_name}"
+        html += f"<span class='toggle-btn' onclick=\"toggleBranch('{cell_id}')\">[+]</span></div>"
+        html += f"<div class='object-branch' id='{cell_id}'>"
+        for member_iface in zones[obj_name]:
+            html += render_obj_branch(
+                member_iface,
+                addresses, address_lookup,
+                address_groups, addrgrp_lookup,
+                services, service_lookup,
+                service_groups, svcgrp_lookup,
+                addresses6, address6_lookup,
+                address_groups6, addrgrp6_lookup,
+                vips, vip_lookup,
+                vipgrps, vipgrp_lookup,
+                zones, interfaces,
+                depth+1, seen
+            )
+        html += "</div>"
+        return html
+
+    # --- Interface（接口） ---
+    if interfaces and obj_name in interfaces:
+        info = f"{obj_name} <span style='color:#999'>[インターフェース]</span>"
+        # 如果想显示接口详情（比如IP地址、类型等），这里可以扩展
+        return f"<div class='object-level'>{info}</div>"
+
+    # --- 未定义 ---
     return f"<div class='object-level' style='color:red;'><b>[未定義]</b>{obj_name}</div>"
 
 def collect_undefined_objs(policies,
@@ -513,6 +692,11 @@ def generate_policy_table(
     services, service_lookup,
     service_groups, svcgrp_lookup,
     undefined_addr, undefined_svc,
+    addresses6, address6_lookup,
+    address_groups6, addrgrp6_lookup,
+    vips, vip_lookup,
+    vipgrps, vipgrp_lookup,
+    zones, interfaces,
     out_file="policy_object_table.html"
 ):
     fields = [
@@ -602,7 +786,12 @@ def generate_policy_table(
                         addresses, address_lookup,
                         address_groups, addrgrp_lookup,
                         services, service_lookup,
-                        service_groups, svcgrp_lookup
+                        service_groups, svcgrp_lookup,
+                        addresses6, address6_lookup,
+                        address_groups6, addrgrp6_lookup,
+                        vips, vip_lookup,
+                        vipgrps, vipgrp_lookup,
+                        zones, interfaces,      # 👈 这两行一定要加
                     )
                     cell_inner.append(
                         f"""<div class='cell-flex'>
@@ -848,30 +1037,58 @@ def main():
     conf_path = choose_conf_file()
     with open(conf_path, "r", encoding="utf-8") as f:
         conf_text = f.read()
+
+    # ====== 采集对象 ======
     addresses, address_lookup = parse_firewall_address(conf_text)
     address_groups, addrgrp_lookup = parse_firewall_addrgrp(conf_text)
     services, service_lookup = parse_firewall_service_custom(conf_text)
     service_groups, svcgrp_lookup = parse_firewall_service_group(conf_text)
-    vips, vip_lookup = parse_firewall_vip(conf_text)    # <--- 新增
-    addresses.update(vips)                              # <--- 合并到地址对象
-    address_lookup.update(vip_lookup)
     policies = parse_firewall_policy(conf_text)
-    # 递归检测未定义对象
+
+    # --- 新增各类对象采集（没有采集时就是空字典/空映射，不报错） ---
+    # VIP对象
+    vips, vip_lookup = {}, {}
+    try:
+        vips, vip_lookup = parse_firewall_vip(conf_text)
+    except Exception:
+        pass
+
+    # VIP组（如果需要，提前留好）
+    vipgrps, vipgrp_lookup = {}, {}
+
+    # IPv6
+    addresses6, address6_lookup = {}, {}
+    address_groups6, addrgrp6_lookup = {}, {}
+
+    # Zone/interface（安全区域/接口映射）
+    zones, interfaces = {}, {}
+
+    # 合并VIP到IPv4地址对象（这样能兼容旧的递归方式，也能支持VIP专有显示）
+    addresses.update(vips)
+    address_lookup.update(vip_lookup)
+
+    # ====== 递归检测未定义对象 ======
     undefined_addr, undefined_svc = collect_undefined_objs(
         policies, addresses, address_lookup,
         address_groups, addrgrp_lookup,
         services, service_lookup,
         service_groups, svcgrp_lookup
     )
+
+    # ====== 生成可视化HTML，参数全部传递 ======
     generate_policy_table(
         policies, addresses, address_lookup,
         address_groups, addrgrp_lookup,
         services, service_lookup,
         service_groups, svcgrp_lookup,
         undefined_addr, undefined_svc,
+        addresses6, address6_lookup,
+        address_groups6, addrgrp6_lookup,
+        vips, vip_lookup,
+        vipgrps, vipgrp_lookup,
+        zones, interfaces,
         out_file="policy_object_table.html"
     )
-
 
 if __name__ == "__main__":
     main()
