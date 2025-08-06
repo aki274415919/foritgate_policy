@@ -16,6 +16,41 @@ def choose_conf_file():
         exit()
     return conf_path
 
+def parse_firewall_zone(conf_text):
+    """
+    采集所有 zone（安全区域）与其成员接口，返回: {zone_name: [interface1, interface2, ...], ...}
+    """
+    zones = {}
+    for m in re.finditer(r'config system zone(.*?)(?:^end$)', conf_text, re.DOTALL | re.MULTILINE):
+        for g in re.finditer(r'edit "([^"]+)"(.*?)next', m.group(1), re.DOTALL):
+            zone_name = g.group(1)
+            member_match = re.search(r'set interface (.+)', g.group(2))
+            if member_match:
+                members = [x.strip('"') for x in member_match.group(1).split()]
+                zones[zone_name] = members
+            else:
+                zones[zone_name] = []
+    return zones
+
+def parse_firewall_interface(conf_text):
+    """
+    采集所有接口定义，返回 {接口名: 属性dict, ...}
+    """
+    interfaces = {}
+    # 只抓名字，你也可以顺便抓IP等属性
+    for m in re.finditer(r'config system interface(.*?)(?:^end$)', conf_text, re.DOTALL | re.MULTILINE):
+        for g in re.finditer(r'edit "([^"]+)"(.*?)next', m.group(1), re.DOTALL):
+            name = g.group(1)
+            props = {"name": name}
+            if m_ip := re.search(r'set ip ([\d\.]+) ([\d\.]+)', g.group(2)):
+                props["ip"] = m_ip.group(1)
+                props["mask"] = m_ip.group(2)
+            if m_type := re.search(r'set type (\S+)', g.group(2)):
+                props["type"] = m_type.group(1)
+            interfaces[name] = props
+    return interfaces
+
+
 
 def extract_vdom_blocks(conf_text):
     vdom_blocks = defaultdict(str)
@@ -475,9 +510,19 @@ def render_obj_branch(
     if isinstance(obj_name, str) and obj_name.strip().lower() in {"any", "all"}:
         return f"<div class='object-level' style='color:green'><b>any</b></div>"
 
-    # --- IPv4 地址对象 ---
+    # --- IPv4 地址对象/VIP ---
     obj = smart_obj_lookup(obj_name, addresses, address_lookup)
     if obj:
+        # VIP 特殊展示
+        if obj.get('extip') and obj.get('mappedip'):
+            info = (
+                f"{obj['name']} <span style='color:#06b;font-weight:bold'>[VIP]</span> "
+                f"外部:{obj['extip']} → 内部:{obj['mappedip']} "
+            )
+            if obj.get('comment'):
+                info += f"<span style='color:#aaa'>#{obj['comment']}</span>"
+            return f"<div class='object-level' style='color:#06b;background:#e7f3ff;'>{info}</div>"
+        # 普通地址对象
         info = f"{obj['name']} <span style='color:#999'>[{obj.get('type','')}]</span> "
         if obj.get('ip'): info += obj['ip'] + " "
         if obj.get('fqdn'): info += obj['fqdn'] + " "
@@ -510,11 +555,46 @@ def render_obj_branch(
         html += "</div>"
         return html
 
+    # --- 服务对象 ---
+    svc = smart_obj_lookup(obj_name, services, service_lookup)
+    if svc:
+        info = f"{svc['name']} <span style='color:#999'>[服务]</span> "
+        if svc.get('protocol'): info += f"proto:{svc['protocol']} "
+        if svc.get('tcp_port'): info += f"TCP:{svc['tcp_port']} "
+        if svc.get('udp_port'): info += f"UDP:{svc['udp_port']} "
+        if svc.get('comment'): info += f"<span style='color:#aaa'>#{svc['comment']}</span>"
+        return f"<div class='object-level'>{info}</div>"
+
+    # --- 服务组 ---
+    svcgrp = smart_obj_lookup(obj_name, service_groups, svcgrp_lookup)
+    if svcgrp:
+        html = f"<div class='object-level cell-flex' style='font-weight:bold;color:#148;'>"
+        html += f"<span class='obj-name'>{svcgrp['name']} <span style='color:#888'>(服务组)</span></span>"
+        cell_id = f"obj-svcgrp-{svcgrp['name']}"
+        html += f"<span class='toggle-btn' onclick=\"toggleBranch('{cell_id}')\">[+]</span></div>"
+        html += f"<div class='object-branch' id='{cell_id}'>"
+        for member in svcgrp['members']:
+            html += render_obj_branch(
+                member,
+                addresses, address_lookup,
+                address_groups, addrgrp_lookup,
+                services, service_lookup,
+                service_groups, svcgrp_lookup,
+                addresses6, address6_lookup,
+                address_groups6, addrgrp6_lookup,
+                vips, vip_lookup,
+                vipgrps, vipgrp_lookup,
+                zones, interfaces,
+                depth+1, seen
+            )
+        html += "</div>"
+        return html
+
     # --- IPv6 地址对象 ---
     if addresses6 and address6_lookup:
         obj6 = smart_obj_lookup(obj_name, addresses6, address6_lookup)
         if obj6:
-            info = f"{obj6['name']} <span style='color:#5a9'>[IPv6]</span> "
+            info = f"{obj6['name']} <span style='color:#0a6'>[IPv6]</span> "
             if obj6.get('ip'): info += obj6['ip'] + " "
             if obj6.get('comment'): info += f"<span style='color:#aaa'>#{obj6['comment']}</span>"
             return f"<div class='object-level'>{info}</div>"
@@ -523,7 +603,7 @@ def render_obj_branch(
     if address_groups6 and addrgrp6_lookup:
         grp6 = smart_obj_lookup(obj_name, address_groups6, addrgrp6_lookup)
         if grp6:
-            html = f"<div class='object-level cell-flex' style='font-weight:bold;color:#292;'>"
+            html = f"<div class='object-level cell-flex' style='font-weight:bold;color:#176;'>"
             html += f"<span class='obj-name'>{grp6['name']} <span style='color:#888'>(IPv6グループ)</span></span>"
             cell_id = f"obj-addrgrp6-{grp6['name']}"
             html += f"<span class='toggle-btn' onclick=\"toggleBranch('{cell_id}')\">[+]</span></div>"
@@ -545,22 +625,12 @@ def render_obj_branch(
             html += "</div>"
             return html
 
-    # --- VIP ---
-    if vips and vip_lookup:
-        vip = smart_obj_lookup(obj_name, vips, vip_lookup)
-        if vip:
-            info = f"{vip['name']} <span style='color:#06b;font-weight:bold'>[VIP]</span> "
-            if vip.get('extip') and vip.get('mappedip'):
-                info += f"外部:{vip['extip']} → 内部:{vip['mappedip']} "
-            if vip.get('comment'): info += f"<span style='color:#aaa'>#{vip['comment']}</span>"
-            return f"<div class='object-level' style='color:#06b;background:#e7f3ff;'>{info}</div>"
-
     # --- VIP组 ---
     if vipgrps and vipgrp_lookup:
         vipgrp = smart_obj_lookup(obj_name, vipgrps, vipgrp_lookup)
         if vipgrp:
-            html = f"<div class='object-level cell-flex' style='font-weight:bold;color:#258;'>"
-            html += f"<span class='obj-name'>{vipgrp['name']} <span style='color:#888'>(VIPグループ)</span></span>"
+            html = f"<div class='object-level cell-flex' style='font-weight:bold;color:#05b;'>"
+            html += f"<span class='obj-name'>{vipgrp['name']} <span style='color:#888'>(VIP组)</span></span>"
             cell_id = f"obj-vipgrp-{vipgrp['name']}"
             html += f"<span class='toggle-btn' onclick=\"toggleBranch('{cell_id}')\">[+]</span></div>"
             html += f"<div class='object-branch' id='{cell_id}'>"
@@ -581,25 +651,14 @@ def render_obj_branch(
             html += "</div>"
             return html
 
-    # --- 服务对象 ---
-    svc = smart_obj_lookup(obj_name, services, service_lookup)
-    if svc:
-        info = f"{svc['name']} <span style='color:#999'>[サービス]</span> "
-        if svc.get('protocol'): info += f"proto:{svc['protocol']} "
-        if svc.get('tcp_port'): info += f"TCP:{svc['tcp_port']} "
-        if svc.get('udp_port'): info += f"UDP:{svc['udp_port']} "
-        if svc.get('comment'): info += f"<span style='color:#aaa'>#{svc['comment']}</span>"
-        return f"<div class='object-level'>{info}</div>"
-
-    # --- 服务组 ---
-    svcgrp = smart_obj_lookup(obj_name, service_groups, svcgrp_lookup)
-    if svcgrp:
-        html = f"<div class='object-level cell-flex' style='font-weight:bold;color:#148;'>"
-        html += f"<span class='obj-name'>{svcgrp['name']} <span style='color:#888'>(サービスグループ)</span></span>"
-        cell_id = f"obj-svcgrp-{svcgrp['name']}"
+    # --- zone（安全区域）对象 ---
+    if zones and obj_name in zones:
+        html = f"<div class='object-level cell-flex' style='font-weight:bold;color:#c60;'>"
+        html += f"<span class='obj-name'>{obj_name} <span style='color:#c60'>(Zone)</span></span>"
+        cell_id = f"obj-zone-{obj_name}"
         html += f"<span class='toggle-btn' onclick=\"toggleBranch('{cell_id}')\">[+]</span></div>"
         html += f"<div class='object-branch' id='{cell_id}'>"
-        for member in svcgrp['members']:
+        for member in zones[obj_name]:
             html += render_obj_branch(
                 member,
                 addresses, address_lookup,
@@ -616,38 +675,17 @@ def render_obj_branch(
         html += "</div>"
         return html
 
-    # --- Zone（安全区域） ---
-    if zones and obj_name in zones:
-        html = f"<div class='object-level cell-flex' style='font-weight:bold;color:#173;'>"
-        html += f"<span class='obj-name'>{obj_name} <span style='color:#888'>(ゾーン)</span></span>"
-        cell_id = f"obj-zone-{obj_name}"
-        html += f"<span class='toggle-btn' onclick=\"toggleBranch('{cell_id}')\">[+]</span></div>"
-        html += f"<div class='object-branch' id='{cell_id}'>"
-        for member_iface in zones[obj_name]:
-            html += render_obj_branch(
-                member_iface,
-                addresses, address_lookup,
-                address_groups, addrgrp_lookup,
-                services, service_lookup,
-                service_groups, svcgrp_lookup,
-                addresses6, address6_lookup,
-                address_groups6, addrgrp6_lookup,
-                vips, vip_lookup,
-                vipgrps, vipgrp_lookup,
-                zones, interfaces,
-                depth+1, seen
-            )
-        html += "</div>"
-        return html
-
-    # --- Interface（接口） ---
+    # --- 接口对象 ---
     if interfaces and obj_name in interfaces:
-        info = f"{obj_name} <span style='color:#999'>[インターフェース]</span>"
-        # 如果想显示接口详情（比如IP地址、类型等），这里可以扩展
-        return f"<div class='object-level'>{info}</div>"
+        iface = interfaces[obj_name]
+        info = f"<b>{iface['name']}</b>"
+        if 'ip' in iface: info += f" <span style='color:#555'>IP:{iface['ip']}</span>"
+        if 'type' in iface: info += f" <span style='color:#777'>type:{iface['type']}</span>"
+        return f"<div class='object-level' style='margin-left:12px;color:#2a6;'>{info}</div>"
 
-    # --- 未定义 ---
+    # --- 未定义对象 ---
     return f"<div class='object-level' style='color:red;'><b>[未定義]</b>{obj_name}</div>"
+
 
 def collect_undefined_objs(policies,
     addresses, address_lookup,
@@ -704,7 +742,7 @@ def generate_policy_table(
         'srcaddr', 'dstaddr', 'service', 'schedule',
         'logtraffic', 'comments', 'uuid', 'policyid'
     ]
-    expand_fields = {"srcaddr", "dstaddr", "service"}
+    expand_fields = {"srcaddr", "dstaddr", "service","srcaddr", "dstaddr", "service", "srcintf", "dstintf"}
     html = [
         "<!DOCTYPE html><html lang='ja'><head><meta charset='UTF-8'>",
         "<title>FortiGateポリシービジュアライズ</title>",
@@ -1074,8 +1112,9 @@ def main():
         services, service_lookup,
         service_groups, svcgrp_lookup
     )
+    zones = parse_firewall_zone(conf_text)
+    interfaces = parse_firewall_interface(conf_text)
 
-    # ====== 生成可视化HTML，参数全部传递 ======
     generate_policy_table(
         policies, addresses, address_lookup,
         address_groups, addrgrp_lookup,
@@ -1089,6 +1128,8 @@ def main():
         zones, interfaces,
         out_file="policy_object_table.html"
     )
+    # ====== 生成可视化HTML，参数全部传递 ======
+
 
 if __name__ == "__main__":
     main()
